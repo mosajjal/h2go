@@ -25,8 +25,8 @@ const (
 	PULL       = "/pull"
 	PUSH       = "/push"
 	DOWNLOAD   = "/download"
-	CHUNK_PULL = "chunk_pull"
-	CHUNK_PUSH = "chunk_push"
+	CHUNK_PULL = "/chunk_pull"
+	CHUNK_PUSH = "/chunk_push"
 )
 const (
 	DATA_TYP  = "data"
