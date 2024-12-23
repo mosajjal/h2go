@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
-	"os"
 	"strconv"
 	"strings"
 )
@@ -229,7 +228,7 @@ func (s *Server) ListenAndServe() (err error) {
 		return err
 	}
 	if s.Logger == nil {
-		s.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{}))
+		s.Logger = DefaultLogger()
 	}
 	s.Logger.Info("https/socks5 started",
 		"addr", l.Addr().(*net.TCPAddr).String())

@@ -18,7 +18,7 @@ var hc = &http.Client{Transport: http.DefaultTransport}
 
 func Init(logger *slog.Logger, cert string) {
 	if logger == nil {
-		logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+		logger = DefaultLogger()
 	}
 	if f, err := os.Stat(cert); err == nil && !f.IsDir() {
 		var CAPOOL *x509.CertPool
@@ -93,7 +93,6 @@ func (c *localProxyConn) chunkPush(data []byte, typ string) error {
 		default:
 			return fmt.Errorf("status code is %d, body is: %s", res.StatusCode, string(body))
 		}
-		return nil
 	}()
 
 	c.dst = ww

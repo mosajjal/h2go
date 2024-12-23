@@ -3,7 +3,6 @@ package h2go
 import (
 	"log/slog"
 	"net/http"
-	"os"
 	"strconv"
 	"time"
 
@@ -68,7 +67,7 @@ type httpProxy struct {
 
 func NewHttpProxy(logger *slog.Logger, addr, secret string, https bool) *httpProxy {
 	if logger == nil {
-		logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{}))
+		logger = DefaultLogger()
 	}
 	return &httpProxy{addr: addr,
 		secret:   secret,

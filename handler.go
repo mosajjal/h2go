@@ -1,7 +1,6 @@
 package h2go
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -23,7 +22,7 @@ func (h *Handler) Connect(addr string) (io.ReadWriteCloser, error) {
 	port := strings.Split(addr, ":")[1]
 	uuid, err := conn.connect(host, port)
 	if err != nil {
-		return nil, errors.New(fmt.Sprintf("connect %s %v", addr, err))
+		return nil, fmt.Errorf("connect %s %v", addr, err)
 	}
 	conn.uuid = uuid
 	if h.Interval == 0 {

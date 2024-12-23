@@ -18,7 +18,6 @@ package main
 
 import (
 	"fmt"
-	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -31,11 +30,11 @@ import (
 )
 
 var (
-	GitTag    = "2000.01.01.release"
-	BuildTime = "2000-01-01T00:00:00+0800"
+	version = "v0-UNKNOWN"
+	commit  = "NOT PROVIDED"
 )
 
-var log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{}))
+var log = h2go.DefaultLogger()
 
 // Config holds all configuration
 type Config struct {
@@ -114,7 +113,7 @@ func main() {
 	}
 
 	if conf.Version {
-		fmt.Printf("GitTag: %s\nBuildTime: %s\n", GitTag, BuildTime)
+		fmt.Printf("h2go %s (%s)\n", version, commit)
 		os.Exit(0)
 	}
 
