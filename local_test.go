@@ -1,7 +1,8 @@
 package h2go
 
 import (
-	"io/ioutil"
+	"fmt"
+	"io"
 	"testing"
 	"time"
 
@@ -19,7 +20,7 @@ func TestProxyConn(t *testing.T) {
 		time.Sleep(time.Millisecond * 100)
 		conn.Close()
 	}()
-	body, _ := ioutil.ReadAll(conn)
+	body, _ := io.ReadAll(conn)
 	assert.Contains(t, string(body), "pong")
 }
 
@@ -34,7 +35,7 @@ func TestProxyConn2(t *testing.T) {
 		time.Sleep(time.Millisecond * 100)
 		conn.Close()
 	}()
-	body, _ := ioutil.ReadAll(conn)
+	body, _ := io.ReadAll(conn)
 	assert.Contains(t, string(body), "404")
 }
 
@@ -48,10 +49,16 @@ func TestProxyConn3(t *testing.T) {
 	assert.True(t, ok)
 	// wrong uuid
 	p.uuid = ""
-	_, err = conn.Write([]byte("GET /connect HTTP/1.1\r\nHost: localhost\r\n\r\n"))
+	p.Write([]byte("GET /connect HTTP/1.1\r\nHost: localhost\r\n\r\n"))
+	go func() {
+		time.Sleep(time.Millisecond * 100)
+		p.Close()
+	}()
+	body, _ := io.ReadAll(p)
+	fmt.Println(string(body))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "uuid don't exist")
-	conn.Close()
+	// conn.Close()
 }
 
 func TestProxyConn4(t *testing.T) {
@@ -64,7 +71,7 @@ func TestProxyConn4(t *testing.T) {
 	assert.True(t, ok)
 	// wrong uuid
 	p.uuid = ""
-	body, err := ioutil.ReadAll(conn)
+	body, err := io.ReadAll(conn)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "uuid don't exist")
 	conn.Close()

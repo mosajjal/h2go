@@ -111,7 +111,7 @@ func (hp *httpProxy) verify(r *http.Request) error {
 	sign := r.Header.Get("sign")
 	tm, err := strconv.ParseInt(ts, 10, 0)
 	if err != nil {
-		return err
+		return fmt.Errorf("timestamp invalid:%v", err)
 	}
 	now := time.Now().Unix()
 	if now-tm > signTTL {
@@ -128,7 +128,7 @@ func (hp *httpProxy) before(w http.ResponseWriter, r *http.Request) error {
 	err := hp.verify(r)
 	if err != nil {
 		// g.V(LDEBUG).Info(err)
-		hp.logger.Error("error", "msg", err)
+		hp.logger.Error("error while verifying the request", "msg", err)
 		WriteNotFoundError(w, "404")
 	}
 	return err

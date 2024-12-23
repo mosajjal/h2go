@@ -2,13 +2,11 @@ package h2go
 
 import (
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/assert"
 )
 
 var (
@@ -39,10 +37,16 @@ func TestHandler_Connect(t *testing.T) {
 
 	res, err := http.Get(fmt.Sprintf("http://127.0.0.1%s%s", testAddr, CONNECT))
 	if err != nil {
-		assert.NoError(t, err)
+		t.Error(err)
 	}
-	assert.Equal(t, res.StatusCode, 404)
+	// assert.Equal(t, res.StatusCode, 404)
+	if res.StatusCode != 404 {
+		t.Error("status code not equal 404")
+	}
 	defer res.Body.Close()
-	body, _ := ioutil.ReadAll(res.Body)
-	assert.Equal(t, "404", string(body))
+	body, _ := io.ReadAll(res.Body)
+	// assert.Equal(t, "404", string(body))
+	if string(body) != "404" {
+		t.Error("body not equal 404")
+	}
 }
