@@ -6,7 +6,7 @@ proxy over http[s], support http,socks5 proxy.
 
 ```
 +------------+            +--------------+          
-| local app  |  <=======> |local proxy   | <#######
+| client app |  <=======> |local proxy   | <#######
 +------------+            +--------------+        #
                                                   #
                                                   #
@@ -30,10 +30,10 @@ Download the latest binaries from this [release page](https://github.com/mosajja
 ./server -addr :8080 -secret <password>
 ```
 
-## Local side (Run on your local pc)
+## Client side (Run on your local pc)
 
 ```
-./local -raddr http://example.com:8080 -secret <password>
+./client -raddr http://example.com:8080 -secret <password>
 ```
 
 ## https
@@ -49,7 +49,7 @@ If you have a ssl certificate, It would be easy.
 ```
 
 ```
-./local -raddr https://example.com -secret <password>
+./client -raddr https://example.com -secret <password>
 ```
 
 Of Course, you can create a self-signed ssl certificate by openssl.
@@ -63,7 +63,7 @@ sh -c "$(curl https://raw.githubusercontent.com/mosajjal/h2go/master/gen_key_cer
 ```
 
 ```
-./local -raddr https://example.com -secret <password> -cert /etc/self-signed-cert.pem
+./client -raddr https://example.com -secret <password> -cert /etc/self-signed-cert.pem
 ```
 
 
