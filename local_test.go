@@ -1,7 +1,6 @@
 package h2go
 
 import (
-	"fmt"
 	"io"
 	"testing"
 	"time"
@@ -20,7 +19,8 @@ func TestProxyConn(t *testing.T) {
 		time.Sleep(time.Millisecond * 100)
 		conn.Close()
 	}()
-	body, _ := io.ReadAll(conn)
+	body, err := io.ReadAll(conn)
+	assert.NoError(t, err)
 	assert.Contains(t, string(body), "pong")
 }
 
@@ -49,13 +49,13 @@ func TestProxyConn3(t *testing.T) {
 	assert.True(t, ok)
 	// wrong uuid
 	p.uuid = ""
-	p.Write([]byte("GET /connect HTTP/1.1\r\nHost: localhost\r\n\r\n"))
+	conn.Write([]byte("GET /connect HTTP/1.1\r\nHost: localhost\r\n\r\n"))
 	go func() {
 		time.Sleep(time.Millisecond * 100)
-		p.Close()
+		conn.Close()
 	}()
-	body, _ := io.ReadAll(p)
-	fmt.Println(string(body))
+	_, err = io.ReadAll(conn)
+
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "uuid don't exist")
 	// conn.Close()

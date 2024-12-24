@@ -39,13 +39,11 @@ func TestHandler_Connect(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-	// assert.Equal(t, res.StatusCode, 404)
 	if res.StatusCode != 404 {
 		t.Error("status code not equal 404")
 	}
 	defer res.Body.Close()
 	body, _ := io.ReadAll(res.Body)
-	// assert.Equal(t, "404", string(body))
 	if string(body) != "404" {
 		t.Error("body not equal 404")
 	}

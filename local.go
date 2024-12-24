@@ -73,7 +73,14 @@ func (c *localProxyConn) chunkPush(data []byte, typ string) error {
 		return err
 	}
 	wr, ww := io.Pipe()
-	req, _ := http.NewRequest("POST", c.server+PUSH, wr)
+	// If NewRequest is called with a context that has a cancel function,
+	// it will get called when any of the functions within the goroutine
+	// fail and return an error. This creates a race condition, hence
+	// this function should be called with a background() context
+	req, err := http.NewRequest("POST", c.server+PUSH, wr)
+	if err != nil {
+		return err
+	}
 	req.Header.Set("TYP", typ)
 	req.Header.Set("Transfer-Encoding", "chunked")
 	c.genSign(req)
@@ -83,10 +90,13 @@ func (c *localProxyConn) chunkPush(data []byte, typ string) error {
 		defer ww.Close()
 		res, err := hc.Do(req)
 		if err != nil {
-			return
+			return err
 		}
 		defer res.Body.Close()
-		body, _ := io.ReadAll(res.Body)
+		body, err := io.ReadAll(res.Body)
+		if err != nil {
+			return err
+		}
 		switch res.StatusCode {
 		case HeadOK:
 			return nil
@@ -96,13 +106,18 @@ func (c *localProxyConn) chunkPush(data []byte, typ string) error {
 	}()
 
 	c.dst = ww
-	_, err := c.dst.Write(data)
+	_, err = c.dst.Write(data)
 	return err
 }
 
 func (c *localProxyConn) push(data []byte, typ string) error {
 	buf := bytes.NewBuffer(data)
-	req, _ := http.NewRequest("POST", c.server+PUSH, buf)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "POST", c.server+PUSH, buf)
+	if err != nil {
+		return err
+	}
 	req.Header.Set("TYP", typ)
 	c.genSign(req)
 	req.ContentLength = int64(len(data))
@@ -112,7 +127,10 @@ func (c *localProxyConn) push(data []byte, typ string) error {
 		return err
 	}
 	defer res.Body.Close()
-	body, _ := io.ReadAll(res.Body)
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return err
+	}
 	switch res.StatusCode {
 	case HeadOK:
 		return nil
@@ -122,18 +140,23 @@ func (c *localProxyConn) push(data []byte, typ string) error {
 }
 
 func (c *localProxyConn) connect(dstHost, dstPort string) (uuid string, err error) {
-	req, _ := http.NewRequest("GET", c.server+CONNECT, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", c.server+CONNECT, nil)
+	if err != nil {
+		return "", err
+	}
 	c.genSign(req)
 	req.Header.Set("DSTHOST", dstHost)
 	req.Header.Set("DSTPORT", dstPort)
-	cxt, cancel := context.WithTimeout(context.Background(), time.Second*timeout)
-	defer cancel()
-	req.WithContext(cxt)
 	res, err := hc.Do(req)
 	if err != nil {
 		return "", err
 	}
-	body, _ := io.ReadAll(res.Body)
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return "", err
+	}
 	res.Body.Close()
 	if res.StatusCode != HeadOK {
 		return "", fmt.Errorf("status code is %d, body is:%s", res.StatusCode, string(body))
@@ -144,21 +167,26 @@ func (c *localProxyConn) connect(dstHost, dstPort string) (uuid string, err erro
 
 func (c *localProxyConn) pull() error {
 
-	req, _ := http.NewRequest("GET", c.server+PULL, nil)
+	req, err := http.NewRequest("GET", c.server+PULL, nil)
+	if err != nil {
+		return err
+	}
 	req.Header.Set("Interval", fmt.Sprintf("%d", c.interval))
 	c.genSign(req)
 	if c.interval > 0 {
-		cxt, cancel := context.WithTimeout(context.Background(), time.Second*timeout)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*timeout)
 		defer cancel()
-		req.WithContext(cxt)
-
+		req.WithContext(ctx)
 	}
 	res, err := hc.Do(req)
 	if err != nil {
 		return err
 	}
 	if res.StatusCode != HeadOK {
-		body, _ := io.ReadAll(res.Body)
+		body, err := io.ReadAll(res.Body)
+		if err != nil {
+			return err
+		}
 		res.Body.Close()
 		return fmt.Errorf("status code is %d, body is %s", res.StatusCode, string(body))
 	}
@@ -195,10 +223,10 @@ func (c *localProxyConn) Write(b []byte) (int, error) {
 		err = c.push(b, DATA_TYP)
 	} else {
 		//err = c.push(b, DATA_TYP)
+		// this chunkpush does not respect the timeout value
 		err = c.chunkPush(b, DATA_TYP)
 	}
 	if err != nil {
-		// g.V(LDEBUG).Infof("push: %v", err)
 		return 0, err
 	}
 

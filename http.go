@@ -107,10 +107,13 @@ func (hp *httpProxy) download(w http.ResponseWriter, r *http.Request) {
 
 func (hp *httpProxy) verify(r *http.Request) error {
 	ts := r.Header.Get("timestamp")
+	if ts == "" {
+		return errors.New("timestamp is empty")
+	}
 	sign := r.Header.Get("sign")
 	tm, err := strconv.ParseInt(ts, 10, 0)
 	if err != nil {
-		return fmt.Errorf("timestamp invalid:%v", err)
+		return fmt.Errorf("timestamp invalid: %v", err)
 	}
 	now := time.Now().Unix()
 	if now-tm > signTTL {
@@ -118,24 +121,27 @@ func (hp *httpProxy) verify(r *http.Request) error {
 	}
 	if VerifyHMACSHA1(hp.secret, ts, sign) {
 		return nil
-	} else {
-		return errors.New("sign invalid")
 	}
+	return errors.New("sign invalid")
 }
 
 func (hp *httpProxy) before(w http.ResponseWriter, r *http.Request) error {
 	err := hp.verify(r)
 	if err != nil {
-		// g.V(LDEBUG).Info(err)
-		hp.logger.Error("error while verifying the request", "msg", err)
+		hp.logger.Warn("error while verifying the request",
+			"msg", err)
 		WriteNotFoundError(w, "404")
 	}
 	return err
 }
 
 func (hp *httpProxy) ping(w http.ResponseWriter, r *http.Request) {
+	hp.logger.Debug("ping",
+		"remote", r.RemoteAddr)
 	w.Header().Set("Version", version)
 	w.Write([]byte("pong"))
+	hp.logger.Debug("pong",
+		"remote", r.RemoteAddr)
 }
 
 func (hp *httpProxy) pull(w http.ResponseWriter, r *http.Request) {
@@ -161,7 +167,12 @@ func (hp *httpProxy) pull(w http.ResponseWriter, r *http.Request) {
 	}
 	buf := bufPool.Get().([]byte)
 	defer bufPool.Put(buf)
-	t, _ := strconv.ParseInt(interval, 10, 0)
+	t, err := strconv.ParseInt(interval, 10, 0)
+	if err != nil {
+		hp.logger.Warn("error",
+			"interval", interval,
+			"msg", err)
+	}
 	if t > 0 {
 		pc.remote.SetReadDeadline(time.Now().Add(time.Duration(t)))
 		n, err := pc.remote.Read(buf)
@@ -172,16 +183,21 @@ func (hp *httpProxy) pull(w http.ResponseWriter, r *http.Request) {
 			if err, ok := err.(net.Error); ok && err.Timeout() {
 			} else {
 				if err != io.EOF && !pc.IsClosed() {
-					// g.V(LERROR).Infof("read :%v", err)
 					hp.logger.Error("error", "msg", err)
 				}
+				hp.logger.Debug("closing the remote conn",
+					"uuid", uuid)
 				pc.Close()
 			}
 		}
 
 		return
 	}
-	flusher, _ := w.(http.Flusher)
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		hp.logger.Warn("error",
+			"msg", "can't convert to http.Flusher")
+	}
 	w.Header().Set("Transfer-Encoding", "chunked")
 	defer pc.Close()
 	for {
@@ -192,7 +208,6 @@ func (hp *httpProxy) pull(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			if err != io.EOF && !pc.IsClosed() {
-				// g.V(LERROR).Info(err)
 				hp.logger.Error("error", "msg", err)
 			}
 			return
@@ -223,14 +238,17 @@ func (hp *httpProxy) push(w http.ResponseWriter, r *http.Request) {
 	case HEART_TYP:
 		pc.Heart()
 	case QUIT_TYP:
+		hp.logger.Debug("closing the remote conn",
+			"uuid", uuid)
 		pc.Close()
 	case DATA_TYP:
 		_, err := io.Copy(pc.remote, r.Body)
 		if err != nil && err != io.EOF {
 			if !pc.IsClosed() {
-				// g.V(LERROR).Info(err)
 				hp.logger.Error("error", "msg", err)
 			}
+			hp.logger.Debug("closing the remote conn",
+				"uuid", uuid)
 			pc.Close()
 		}
 	}
@@ -251,7 +269,6 @@ func (hp *httpProxy) connect(w http.ResponseWriter, r *http.Request) {
 		WriteHTTPError(w, fmt.Sprintf("connect %s %v", addr, err))
 		return
 	}
-	// g.V(LINFO).Infof("connect %s success", addr)
 	hp.logger.Info("connect success", "addr", addr)
 	proxyID := uuid.New().String()
 	pc := newProxyConn(remote, proxyID)
@@ -264,19 +281,15 @@ func (hp *httpProxy) connect(w http.ResponseWriter, r *http.Request) {
 		hp.Lock()
 		delete(hp.proxyMap, proxyID)
 		hp.Unlock()
-		// g.V(LINFO).Infof("disconnect %s", addr)
 		hp.logger.Info("disconnect", "addr", addr)
 	}()
 	WriteHTTPOK(w, proxyID)
 }
 
-// not used by now
-
 func (hp *httpProxy) chunkPush(w http.ResponseWriter, r *http.Request) {
 	if err := hp.before(w, r); err != nil {
 		return
 	}
-	// 消息不超过8k
 	chunk := bufPool.Get().([]byte)
 	defer bufPool.Put(chunk)
 	for {
@@ -285,14 +298,11 @@ func (hp *httpProxy) chunkPush(w http.ResponseWriter, r *http.Request) {
 			// unpack chunk
 		}
 		if err != nil {
-			// g.V(LERROR).Info(err)
 			hp.logger.Error("error", "msg", err)
 			break
 		}
 	}
 }
-
-// not used by now
 
 func (hp *httpProxy) chunkPull(w http.ResponseWriter, r *http.Request) {
 	if err := hp.before(w, r); err != nil {
@@ -306,7 +316,6 @@ func (hp *httpProxy) chunkPull(w http.ResponseWriter, r *http.Request) {
 	for {
 		_, err := w.Write(buf)
 		if err != nil {
-			// g.V(LERROR).Info(err)
 			hp.logger.Error("error", "msg", err)
 			break
 		}

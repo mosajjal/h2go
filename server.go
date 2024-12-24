@@ -236,7 +236,9 @@ func (s *Server) ListenAndServe() (err error) {
 		if conn, err := l.Accept(); err == nil {
 			go func() {
 				if err := s.handlerConn(conn); err != nil {
-					s.Logger.Error("handle conn", "msg", err)
+					s.Logger.Error("handle conn",
+						"from", conn.RemoteAddr().String(),
+						"msg", err)
 				}
 			}()
 		} else {

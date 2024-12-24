@@ -1,6 +1,7 @@
 package h2go
 
 import (
+	"log"
 	"log/slog"
 	"os"
 )
@@ -21,6 +22,10 @@ func init() {
 func DefaultLogger() *slog.Logger {
 	// parse log level
 	var level slog.Level
-	level.UnmarshalText([]byte(logLevel))
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{AddSource: true}))
+	err := level.UnmarshalText([]byte(logLevel))
+	if err != nil {
+		level = slog.LevelInfo
+	}
+	log.Println("log level:", level)
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{AddSource: true, Level: level}))
 }
