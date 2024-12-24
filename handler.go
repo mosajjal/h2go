@@ -3,21 +3,31 @@ package h2go
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"time"
 )
 
-type Handler struct {
+type handler struct {
 	Server   string
 	Secret   string
 	Interval time.Duration
+	Logger   *slog.Logger
 }
 
-func (h *Handler) Connect(addr string) (io.ReadWriteCloser, error) {
+// NewHandler creates a new client handler
+func NewHandler(server, secret string, interval time.Duration, logger *slog.Logger) *handler {
+	if logger == nil {
+		logger = DefaultLogger()
+	}
+	return &handler{Server: server, Secret: secret, Interval: interval, Logger: logger}
+}
+
+func (h *handler) Connect(addr string) (io.ReadWriteCloser, error) {
 	if strings.HasSuffix(h.Server, "/") {
 		h.Server = h.Server[:len(h.Server)-1]
 	}
-	conn := &localProxyConn{server: h.Server, secret: h.Secret, interval: h.Interval}
+	conn := &localProxyConn{server: h.Server, secret: h.Secret, interval: h.Interval, logger: h.Logger}
 	host := strings.Split(addr, ":")[0]
 	port := strings.Split(addr, ":")[1]
 	uuid, err := conn.connect(host, port)
@@ -36,4 +46,4 @@ func (h *Handler) Connect(addr string) (io.ReadWriteCloser, error) {
 	return conn, nil
 }
 
-func (h *Handler) Clean() {}
+func (h *handler) Clean() {}

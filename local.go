@@ -57,6 +57,7 @@ type localProxyConn struct {
 	close    chan bool
 	interval time.Duration
 	dst      io.WriteCloser
+	logger   *slog.Logger
 }
 
 func (c *localProxyConn) genSign(req *http.Request) {

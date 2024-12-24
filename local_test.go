@@ -11,7 +11,7 @@ import (
 func TestProxyConn(t *testing.T) {
 	startProxyServer()
 
-	h := &Handler{Server: "http://localhost" + testAddr, Secret: testSecret}
+	h := NewHandler("http://localhost"+testAddr, testSecret, time.Millisecond*20, nil)
 	conn, err := h.Connect("localhost" + testAddr)
 	assert.NoError(t, err)
 	conn.Write([]byte("GET /ping HTTP/1.1\r\nHost: localhost\r\n\r\n"))
@@ -27,7 +27,7 @@ func TestProxyConn(t *testing.T) {
 func TestProxyConn2(t *testing.T) {
 	startProxyServer()
 
-	h := &Handler{Server: "http://localhost" + testAddr, Secret: testSecret, Interval: time.Millisecond * 20}
+	h := NewHandler("http://localhost"+testAddr, testSecret, time.Millisecond*20, nil)
 	conn, err := h.Connect("localhost" + testAddr)
 	assert.NoError(t, err)
 	conn.Write([]byte("GET /connect HTTP/1.1\r\nHost: localhost\r\n\r\n"))
@@ -42,7 +42,7 @@ func TestProxyConn2(t *testing.T) {
 func TestProxyConn3(t *testing.T) {
 	startProxyServer()
 
-	h := &Handler{Server: "http://localhost" + testAddr, Secret: testSecret}
+	h := NewHandler("http://localhost"+testAddr, testSecret, time.Millisecond*20, nil)
 	conn, err := h.Connect("localhost" + testAddr)
 	assert.NoError(t, err)
 	p, ok := conn.(*localProxyConn)
@@ -64,7 +64,7 @@ func TestProxyConn3(t *testing.T) {
 func TestProxyConn4(t *testing.T) {
 	startProxyServer()
 
-	h := &Handler{Server: "http://localhost" + testAddr, Secret: testSecret, Interval: time.Millisecond * 20}
+	h := NewHandler("http://localhost"+testAddr, testSecret, time.Millisecond*20, nil)
 	conn, err := h.Connect("localhost" + testAddr)
 	assert.NoError(t, err)
 	p, ok := conn.(*localProxyConn)
@@ -81,7 +81,7 @@ func TestProxyConn4(t *testing.T) {
 func TestProxyConn5(t *testing.T) {
 	startProxyServer()
 
-	h := &Handler{Server: "http://localhost" + testAddr, Secret: testSecret, Interval: time.Millisecond * 20}
+	h := NewHandler("http://localhost"+testAddr, testSecret, time.Millisecond*20, nil)
 	conn, err := h.Connect("localhost" + testAddr)
 	assert.NoError(t, err)
 	p, ok := conn.(*localProxyConn)
@@ -95,7 +95,7 @@ func TestProxyConn5(t *testing.T) {
 func TestProxyConn6(t *testing.T) {
 	startProxyServer()
 
-	h := &Handler{Server: "http://localhost" + testAddr, Secret: testSecret, Interval: time.Millisecond * 20}
+	h := NewHandler("http://localhost"+testAddr, testSecret, time.Millisecond*20, nil)
 	conn, err := h.Connect("localhost" + testAddr)
 	assert.NoError(t, err)
 	p, ok := conn.(*localProxyConn)

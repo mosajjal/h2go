@@ -48,8 +48,8 @@ func (r *reqReader) Read(p []byte) (n int, err error) {
 // Server is a socks5/http proxy server
 type Server struct {
 	Addr               string
-	Socks5Handler      *Handler
-	HTTPHandler        *Handler
+	Socks5Handler      *handler
+	HTTPHandler        *handler
 	DisableSocks5      bool
 	DisableHTTP        bool
 	DisableHTTPCONNECT bool

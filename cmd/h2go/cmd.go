@@ -154,11 +154,7 @@ func runClient(conf Config) {
 		Logger: log,
 	}
 
-	handler := &h2go.Handler{
-		Server:   conf.RAddr,
-		Secret:   conf.Secret,
-		Interval: conf.Interval,
-	}
+	handler := h2go.NewHandler(conf.RAddr, conf.Secret, conf.Interval, log)
 
 	s.HTTPHandler = handler
 	s.Socks5Handler = handler
