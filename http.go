@@ -153,6 +153,8 @@ func (hp *httpProxy) pull(w http.ResponseWriter, r *http.Request) {
 	pc, ok := hp.proxyMap[uuid]
 	hp.Unlock()
 	if !ok {
+		hp.logger.Warn("the connection associated with this uuid does not exist",
+			"uuid", uuid)
 		WriteHTTPError(w, "uuid don't exist")
 		return
 	}
@@ -224,6 +226,8 @@ func (hp *httpProxy) push(w http.ResponseWriter, r *http.Request) {
 	pc, ok := hp.proxyMap[uuid]
 	hp.Unlock()
 	if !ok {
+		hp.logger.Warn("the connection associated with this uuid does not exist",
+			"uuid", uuid)
 		WriteHTTPError(w, "uuid don't exist")
 		return
 	}
@@ -298,7 +302,7 @@ func (hp *httpProxy) chunkPush(w http.ResponseWriter, r *http.Request) {
 			// unpack chunk
 		}
 		if err != nil {
-			hp.logger.Error("error", "msg", err)
+			hp.logger.Error("error while reading chunks", "msg", err)
 			break
 		}
 	}
@@ -316,7 +320,7 @@ func (hp *httpProxy) chunkPull(w http.ResponseWriter, r *http.Request) {
 	for {
 		_, err := w.Write(buf)
 		if err != nil {
-			hp.logger.Error("error", "msg", err)
+			hp.logger.Error("error while flushing buffer", "msg", err)
 			break
 		}
 		flusher.Flush()

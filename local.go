@@ -78,9 +78,12 @@ func (c *localProxyConn) chunkPush(data []byte, typ string) error {
 	// it will get called when any of the functions within the goroutine
 	// fail and return an error. This creates a race condition, hence
 	// this function should be called with a background() context
+	// moreover, if we return on an error here, the connection will
+	// never be closed
 	req, err := http.NewRequest("POST", c.server+PUSH, wr)
 	if err != nil {
-		return err
+		c.logger.Warn("chunkPush",
+			"err", err)
 	}
 	req.Header.Set("TYP", typ)
 	req.Header.Set("Transfer-Encoding", "chunked")
@@ -93,11 +96,15 @@ func (c *localProxyConn) chunkPush(data []byte, typ string) error {
 		if err != nil {
 			return err
 		}
+		c.logger.Debug("chunkPush",
+			"status", res.StatusCode)
 		defer res.Body.Close()
 		body, err := io.ReadAll(res.Body)
 		if err != nil {
 			return err
 		}
+		c.logger.Debug("chunkPush",
+			"body", string(body))
 		switch res.StatusCode {
 		case HeadOK:
 			return nil
@@ -123,6 +130,13 @@ func (c *localProxyConn) push(data []byte, typ string) error {
 	c.genSign(req)
 	req.ContentLength = int64(len(data))
 	req.Header.Set("Content-Type", "image/jpeg")
+	c.logger.Debug("push",
+		"uuid", c.uuid,
+		"typ", typ,
+		"server", c.server+PUSH)
+
+	// if there's a QUIT packet is going to end a connection that doesn't have a UUID on the server side
+	// it will cause some issues
 	res, err := hc.Do(req)
 	if err != nil {
 		return err
@@ -132,6 +146,9 @@ func (c *localProxyConn) push(data []byte, typ string) error {
 	if err != nil {
 		return err
 	}
+	c.logger.Debug("push",
+		"status", res.StatusCode,
+		"body", string(body))
 	switch res.StatusCode {
 	case HeadOK:
 		return nil
@@ -150,6 +167,10 @@ func (c *localProxyConn) connect(dstHost, dstPort string) (uuid string, err erro
 	c.genSign(req)
 	req.Header.Set("DSTHOST", dstHost)
 	req.Header.Set("DSTPORT", dstPort)
+	c.logger.Debug("connect",
+		"server", c.server+CONNECT,
+		"dstHost", dstHost,
+		"dstPort", dstPort)
 	res, err := hc.Do(req)
 	if err != nil {
 		return "", err
@@ -179,6 +200,9 @@ func (c *localProxyConn) pull() error {
 		defer cancel()
 		req.WithContext(ctx)
 	}
+	c.logger.Debug("pull",
+		"server", c.server+PULL,
+		"uuid", c.uuid)
 	res, err := hc.Do(req)
 	if err != nil {
 		return err
@@ -200,6 +224,8 @@ func (c *localProxyConn) Read(b []byte) (n int, err error) {
 	if c.source == nil {
 		if c.interval > 0 {
 			if err = c.pull(); err != nil {
+				c.logger.Debug("pull error",
+					"err", err)
 				return
 			}
 		} else {
@@ -207,11 +233,18 @@ func (c *localProxyConn) Read(b []byte) (n int, err error) {
 		}
 	}
 	n, err = c.source.Read(b)
+	c.logger.Debug("read",
+		"uuid", c.uuid,
+		"err", err,
+		"n", n,
+		"b", b[:n])
 	if err != nil {
 		c.source.Close()
 		c.source = nil
 	}
 	if err == io.EOF && c.interval > 0 {
+		// c.logger.Debug("ignoreing eof",
+		// 	"eof", "true")
 		err = nil
 	}
 	return
@@ -225,6 +258,8 @@ func (c *localProxyConn) Write(b []byte) (int, error) {
 	} else {
 		//err = c.push(b, DATA_TYP)
 		// this chunkpush does not respect the timeout value
+		c.logger.Debug("chunkPush",
+			"b", b)
 		err = c.chunkPush(b, DATA_TYP)
 	}
 	if err != nil {
@@ -252,6 +287,8 @@ func (c *localProxyConn) quit() error {
 }
 
 func (c *localProxyConn) Close() error {
+	c.logger.Debug("close",
+		"uuid", c.uuid)
 	close(c.close)
 	return c.quit()
 }
