@@ -18,23 +18,25 @@ import (
 
 var hc = &http.Client{Transport: http.DefaultTransport}
 
+// configureHTTP2Transport creates and configures an HTTP/2 capable transport
+func configureHTTP2Transport(tlsConfig *tls.Config) *http.Transport {
+	transport := &http.Transport{
+		TLSClientConfig: tlsConfig,
+	}
+	// Enable HTTP/2
+	http2.ConfigureTransport(transport)
+	return transport
+}
+
 func Init(logger *slog.Logger, cert string) {
 	if logger == nil {
 		logger = DefaultLogger()
 	}
 	
-	// Create HTTP/2 transport
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			MinVersion: tls.VersionTLS12,
-			NextProtos: []string{"h2", "http/1.1"}, // Prefer HTTP/2
-		},
-	}
-	
-	// Enable HTTP/2
-	if err := http2.ConfigureTransport(transport); err != nil {
-		logger.Warn("failed to configure http2 transport",
-			"err", err)
+	// Create TLS config with HTTP/2 support
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		NextProtos: []string{"h2", "http/1.1"}, // Prefer HTTP/2
 	}
 	
 	if f, err := os.Stat(cert); err == nil && !f.IsDir() {
@@ -52,7 +54,7 @@ func Init(logger *slog.Logger, cert string) {
 			return
 		}
 		CAPOOL.AppendCertsFromPEM(serverCert)
-		transport.TLSClientConfig.RootCAs = CAPOOL
+		tlsConfig.RootCAs = CAPOOL
 		logger.Info("loaded certificate",
 			"cert", cert)
 	} else if err != nil {
@@ -63,7 +65,7 @@ func Init(logger *slog.Logger, cert string) {
 			"cert", cert)
 	}
 	
-	hc = &http.Client{Transport: transport}
+	hc = &http.Client{Transport: configureHTTP2Transport(tlsConfig)}
 }
 
 type localProxyConn struct {
