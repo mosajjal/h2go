@@ -1,6 +1,7 @@
 package h2go
 
 import (
+	"crypto/tls"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -16,6 +17,8 @@ import (
 	"io"
 
 	"github.com/google/uuid"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 )
 
 const (
@@ -88,16 +91,41 @@ func (hp *httpProxy) handler() {
 
 func (hp *httpProxy) ListenHTTPS(cert, key string) {
 	hp.handler()
-	hp.logger.Info("starting the https server",
+	hp.logger.Info("starting the https/http2 server",
 		"addr", hp.addr)
-	hp.logger.Error("error", "msg", http.ListenAndServeTLS(hp.addr, cert, key, nil))
+	
+	// Create HTTP/2 server with TLS
+	server := &http.Server{
+		Addr:    hp.addr,
+		Handler: nil,
+		TLSConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			NextProtos: []string{"h2", "http/1.1"}, // Prefer HTTP/2
+		},
+	}
+	
+	// Configure HTTP/2
+	if err := http2.ConfigureServer(server, &http2.Server{}); err != nil {
+		hp.logger.Error("error configuring http2", "msg", err)
+		return
+	}
+	
+	hp.logger.Error("error", "msg", server.ListenAndServeTLS(cert, key))
 }
 
 func (hp *httpProxy) Listen() {
 	hp.handler()
-	hp.logger.Info("starting the http server",
+	hp.logger.Info("starting the http/http2 server (h2c)",
 		"addr", hp.addr)
-	hp.logger.Error("error", "msg", http.ListenAndServe(hp.addr, nil))
+	
+	// Create HTTP/2 server without TLS (h2c - HTTP/2 cleartext)
+	h2s := &http2.Server{}
+	server := &http.Server{
+		Addr:    hp.addr,
+		Handler: h2c.NewHandler(http.DefaultServeMux, h2s),
+	}
+	
+	hp.logger.Error("error", "msg", server.ListenAndServe())
 }
 
 func (hp *httpProxy) download(w http.ResponseWriter, r *http.Request) {

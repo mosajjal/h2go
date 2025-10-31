@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"golang.org/x/net/http2"
 )
 
 var hc = &http.Client{Transport: http.DefaultTransport}
@@ -20,6 +22,21 @@ func Init(logger *slog.Logger, cert string) {
 	if logger == nil {
 		logger = DefaultLogger()
 	}
+	
+	// Create HTTP/2 transport
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			NextProtos: []string{"h2", "http/1.1"}, // Prefer HTTP/2
+		},
+	}
+	
+	// Enable HTTP/2
+	if err := http2.ConfigureTransport(transport); err != nil {
+		logger.Warn("failed to configure http2 transport",
+			"err", err)
+	}
+	
 	if f, err := os.Stat(cert); err == nil && !f.IsDir() {
 		var CAPOOL *x509.CertPool
 		CAPOOL, err := x509.SystemCertPool()
@@ -35,9 +52,7 @@ func Init(logger *slog.Logger, cert string) {
 			return
 		}
 		CAPOOL.AppendCertsFromPEM(serverCert)
-		tp := hc.Transport.(*http.Transport)
-		config := &tls.Config{RootCAs: CAPOOL}
-		tp.TLSClientConfig = config
+		transport.TLSClientConfig.RootCAs = CAPOOL
 		logger.Info("loaded certificate",
 			"cert", cert)
 	} else if err != nil {
@@ -47,6 +62,8 @@ func Init(logger *slog.Logger, cert string) {
 		logger.Error("cert file is a directory",
 			"cert", cert)
 	}
+	
+	hc = &http.Client{Transport: transport}
 }
 
 type localProxyConn struct {

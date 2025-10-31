@@ -1,11 +1,15 @@
 package h2go
 
 import (
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
+
+	"golang.org/x/net/http2"
 )
 
 type handler struct {
@@ -20,6 +24,23 @@ func NewHandler(server, secret string, interval time.Duration, logger *slog.Logg
 	if logger == nil {
 		logger = DefaultLogger()
 	}
+	
+	// Initialize HTTP/2 client if not already done
+	if hc.Transport == http.DefaultTransport {
+		transport := &http.Transport{
+			TLSClientConfig: &tls.Config{
+				MinVersion: tls.VersionTLS12,
+				NextProtos: []string{"h2", "http/1.1"}, // Prefer HTTP/2
+			},
+		}
+		// Enable HTTP/2
+		if err := http2.ConfigureTransport(transport); err != nil {
+			logger.Warn("failed to configure http2 transport",
+				"err", err)
+		}
+		hc = &http.Client{Transport: transport}
+	}
+	
 	return &handler{Server: server, Secret: secret, Interval: interval, Logger: logger}
 }
 
