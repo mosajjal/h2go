@@ -1,9 +1,11 @@
 package h2go
 
 import (
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -20,6 +22,16 @@ func NewHandler(server, secret string, interval time.Duration, logger *slog.Logg
 	if logger == nil {
 		logger = DefaultLogger()
 	}
+	
+	// Initialize HTTP/2 client if not already done
+	if hc.Transport == http.DefaultTransport {
+		tlsConfig := &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			NextProtos: []string{"h2", "http/1.1"}, // Prefer HTTP/2
+		}
+		hc = &http.Client{Transport: configureHTTP2Transport(tlsConfig)}
+	}
+	
 	return &handler{Server: server, Secret: secret, Interval: interval, Logger: logger}
 }
 
