@@ -369,12 +369,15 @@ func (c *clientConnection) quit() error {
 // It is safe to call Close multiple times.
 func (c *clientConnection) Close() error {
 	c.closeMu.Lock()
-	if c.closed {
-		c.closeMu.Unlock()
+	alreadyClosed := c.closed
+	if !alreadyClosed {
+		c.closed = true
+	}
+	c.closeMu.Unlock()
+
+	if alreadyClosed {
 		return nil
 	}
-	c.closed = true
-	c.closeMu.Unlock()
 
 	c.logger.Debug("close",
 		"uuid", c.uuid)

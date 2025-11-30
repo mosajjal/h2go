@@ -23,8 +23,8 @@ const (
 
 // Common errors for proxy handling.
 var (
-	ErrNotSupportedProtocol = errors.New("not support proxy protocol")
-	ErrNotSupportedNow      = errors.New("not support now")
+	ErrNotSupportedProtocol = errors.New("protocol not supported")
+	ErrNotSupportedNow      = errors.New("not supported now")
 	ErrAuthExtraData        = errors.New("socks authentication get extra data")
 	ErrCommand              = errors.New("socks command not supported")
 	ErrAddrType             = errors.New("socks addr type not supported")
@@ -286,7 +286,7 @@ func (s *LocalServer) ListenAndServe() error {
 	if s.Logger == nil {
 		s.Logger = DefaultLogger()
 	}
-	s.Logger.Info("http/socks5 proxy started",
+	s.Logger.Info("socks5/http proxy started",
 		"addr", l.Addr().(*net.TCPAddr).String())
 	for {
 		if conn, err := l.Accept(); err == nil {
