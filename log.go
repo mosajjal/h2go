@@ -6,7 +6,7 @@ import (
 	"os"
 )
 
-// respect env variable H2GO_LOG_LEVEL or LOG_LEVEL
+// logLevel respects env variable H2GO_LOG_LEVEL or LOG_LEVEL.
 var logLevel = "info"
 
 func init() {
@@ -19,6 +19,7 @@ func init() {
 
 // DefaultLogger returns a new logger with the default log level
 // set to the value of the H2GO_LOG_LEVEL or LOG_LEVEL environment variable.
+// If no environment variable is set, the default level is INFO.
 func DefaultLogger() *slog.Logger {
 	// parse log level
 	var level slog.Level
@@ -28,4 +29,15 @@ func DefaultLogger() *slog.Logger {
 	}
 	log.Println("log level:", level)
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{AddSource: true, Level: level}))
+}
+
+// NewLogger creates a new logger with the specified level.
+// Valid levels are: debug, info, warn, error.
+func NewLogger(level string) *slog.Logger {
+	var lvl slog.Level
+	err := lvl.UnmarshalText([]byte(level))
+	if err != nil {
+		lvl = slog.LevelInfo
+	}
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{AddSource: true, Level: lvl}))
 }

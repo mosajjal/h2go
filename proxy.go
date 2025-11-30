@@ -6,15 +6,18 @@ import (
 	"time"
 )
 
+// proxyConn represents a proxy connection to a remote host.
+// It manages the lifecycle of the connection including heartbeat handling.
 type proxyConn struct {
-	remote net.Conn
-	uuid   string
-	close  chan struct{}
-	heart  chan struct{}
-	sync.Mutex
+	remote    net.Conn
+	uuid      string
+	close     chan struct{}
+	heart     chan struct{}
+	mu        sync.Mutex
 	hasClosed bool
 }
 
+// newProxyConn creates a new proxy connection.
 func newProxyConn(remote net.Conn, uuid string) *proxyConn {
 	return &proxyConn{remote: remote, uuid: uuid,
 		close: make(chan struct{}),
@@ -22,23 +25,25 @@ func newProxyConn(remote net.Conn, uuid string) *proxyConn {
 	}
 }
 
+// Close closes the proxy connection.
 func (pc *proxyConn) Close() {
-	pc.Lock()
+	pc.mu.Lock()
 	pc.hasClosed = true
-	pc.Unlock()
+	pc.mu.Unlock()
 	select {
 	case pc.close <- struct{}{}:
 	default:
-
 	}
 }
 
+// IsClosed returns whether the connection is closed.
 func (pc *proxyConn) IsClosed() bool {
-	pc.Lock()
-	defer pc.Unlock()
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
 	return pc.hasClosed
 }
 
+// Heart sends a heartbeat signal to keep the connection alive.
 func (pc *proxyConn) Heart() {
 	select {
 	case pc.heart <- struct{}{}:
@@ -46,8 +51,8 @@ func (pc *proxyConn) Heart() {
 	}
 }
 
+// Do runs the connection lifecycle, waiting for close or heartbeat timeout.
 func (pc *proxyConn) Do() {
-
 	defer pc.remote.Close()
 
 	for {

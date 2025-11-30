@@ -14,20 +14,34 @@ import (
 	"strings"
 )
 
+// SOCKS5 address types.
 const (
 	typeIPv4 = 1 // type is ipv4 address
 	typeDm   = 3 // type is domain address
 	typeIPv6 = 4 // type is ipv6 address
 )
 
+// Common errors for proxy handling.
 var (
-	errNotSupportProtocol = errors.New("not support proxy protocol")
-	errNotSupportNow      = errors.New("not support now")
-	errAuthExtraData      = errors.New("socks authentication get extra data")
-	errCmd                = errors.New("socks command not supported")
-	errAddrType           = errors.New("socks addr type not supported")
-	errVer                = errors.New("socks version not supported")
-	errReqExtraData       = errors.New("socks request get extra data")
+	ErrNotSupportedProtocol = errors.New("not support proxy protocol")
+	ErrNotSupportedNow      = errors.New("not support now")
+	ErrAuthExtraData        = errors.New("socks authentication get extra data")
+	ErrCommand              = errors.New("socks command not supported")
+	ErrAddrType             = errors.New("socks addr type not supported")
+	ErrVersion              = errors.New("socks version not supported")
+	ErrReqExtraData         = errors.New("socks request get extra data")
+)
+
+// Legacy error variables for backward compatibility.
+// Deprecated: Use the exported error variables instead.
+var (
+	errNotSupportProtocol = ErrNotSupportedProtocol
+	errNotSupportNow      = ErrNotSupportedNow
+	errAuthExtraData      = ErrAuthExtraData
+	errCmd                = ErrCommand
+	errAddrType           = ErrAddrType
+	errVer                = ErrVersion
+	errReqExtraData       = ErrReqExtraData
 )
 
 type reqReader struct {
@@ -45,18 +59,59 @@ func (r *reqReader) Read(p []byte) (n int, err error) {
 	return
 }
 
-// Server is a socks5/http proxy server
-type Server struct {
-	Addr               string
-	Socks5Handler      *handler
-	HTTPHandler        *handler
-	DisableSocks5      bool
-	DisableHTTP        bool
+// LocalServer is a local SOCKS5/HTTP proxy server that forwards connections
+// through a remote proxy server. It accepts connections from local applications
+// and forwards them to the configured proxy handlers.
+type LocalServer struct {
+	// Addr is the local address to listen on.
+	Addr string
+
+	// Socks5Handler handles SOCKS5 proxy requests.
+	Socks5Handler ProxyHandler
+
+	// HTTPHandler handles HTTP proxy requests.
+	HTTPHandler ProxyHandler
+
+	// DisableSocks5 disables SOCKS5 proxy support.
+	DisableSocks5 bool
+
+	// DisableHTTP disables HTTP proxy support.
+	DisableHTTP bool
+
+	// DisableHTTPCONNECT disables HTTP CONNECT method support.
 	DisableHTTPCONNECT bool
-	Logger             *slog.Logger
+
+	// Logger is the logger for the server.
+	Logger *slog.Logger
 }
 
-func (s *Server) handlerConn(conn net.Conn) (err error) {
+// NewLocalServer creates a new local proxy server with the given options.
+//
+// Example:
+//
+//	client := h2go.NewClient(
+//	    h2go.WithServerURL("http://proxy.example.com:8080"),
+//	    h2go.WithSecret("my-secret"),
+//	)
+//
+//	server := h2go.NewLocalServer(
+//	    h2go.WithLocalListenAddr("127.0.0.1:1080"),
+//	    h2go.WithSocks5Handler(client),
+//	    h2go.WithHTTPHandler(client),
+//	)
+func NewLocalServer(opts ...LocalServerOption) *LocalServer {
+	s := &LocalServer{
+		Logger: DefaultLogger(),
+	}
+
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	return s
+}
+
+func (s *LocalServer) handleConn(conn net.Conn) (err error) {
 
 	defer conn.Close()
 	var (
@@ -71,7 +126,7 @@ func (s *Server) handlerConn(conn net.Conn) (err error) {
 	}
 	if buf[0] == 0x05 {
 		if s.DisableSocks5 || (s.Socks5Handler == nil) {
-			return errNotSupportProtocol
+			return ErrNotSupportedProtocol
 		}
 		nmethod := int(buf[1])
 		msgLen := nmethod + 2
@@ -82,7 +137,7 @@ func (s *Server) handlerConn(conn net.Conn) (err error) {
 				return
 			}
 		} else {
-			return errAuthExtraData
+			return ErrAuthExtraData
 		}
 		// send confirmation: version 5, no authentication required
 		if _, err = conn.Write([]byte{0x05, 0x00}); err != nil {
@@ -94,10 +149,10 @@ func (s *Server) handlerConn(conn net.Conn) (err error) {
 			return
 		}
 		if buf[0] != 0x05 {
-			return errVer
+			return ErrVersion
 		}
 		if buf[1] != 0x01 {
-			return errCmd
+			return ErrCommand
 		}
 		reqLen := -1
 		var (
@@ -112,7 +167,7 @@ func (s *Server) handlerConn(conn net.Conn) (err error) {
 		case typeDm:
 			reqLen = int(buf[4]) + 7
 		default:
-			return errAddrType
+			return ErrAddrType
 		}
 		if n == reqLen {
 			// common case, do nothing
@@ -121,7 +176,7 @@ func (s *Server) handlerConn(conn net.Conn) (err error) {
 				return
 			}
 		} else {
-			return errReqExtraData
+			return ErrReqExtraData
 		}
 		switch buf[3] {
 		case typeIPv4:
@@ -147,7 +202,7 @@ func (s *Server) handlerConn(conn net.Conn) (err error) {
 		defer s.Socks5Handler.Clean()
 	} else {
 		if s.DisableHTTP || (s.HTTPHandler == nil) {
-			return errNotSupportProtocol
+			return ErrNotSupportedProtocol
 		}
 
 		req, err := http.ReadRequest(bufio.NewReader(&reqReader{b: buf[:n], r: conn}))
@@ -162,7 +217,7 @@ func (s *Server) handlerConn(conn net.Conn) (err error) {
 
 		if req.Method == "CONNECT" && s.DisableHTTPCONNECT {
 			conn.Write([]byte("HTTP/1.1 502 Connection refused\r\n\r\n"))
-			return errNotSupportProtocol
+			return ErrNotSupportedProtocol
 		}
 
 		if s.Logger.Enabled(context.Background(), slog.LevelDebug) {
@@ -172,7 +227,7 @@ func (s *Server) handlerConn(conn net.Conn) (err error) {
 
 		if req.Method == "PRI" && req.ProtoMajor == 2 {
 			conn.Write([]byte("HTTP/1.1 400 Bad Request\r\n\r\n"))
-			return errNotSupportNow
+			return ErrNotSupportedNow
 		}
 		addr := req.Host
 		if !strings.Contains(addr, ":") {
@@ -199,7 +254,7 @@ func (s *Server) handlerConn(conn net.Conn) (err error) {
 	return s.transport(conn, conn2)
 }
 
-func (s *Server) transport(conn1 io.ReadWriter, conn2 io.ReadWriter) (err error) {
+func (s *LocalServer) transport(conn1 io.ReadWriter, conn2 io.ReadWriter) (err error) {
 	errChan := make(chan error, 2)
 
 	go func() {
@@ -221,8 +276,9 @@ func (s *Server) transport(conn1 io.ReadWriter, conn2 io.ReadWriter) (err error)
 	return
 }
 
-// ListenAndServe start a socks5/http proxy server
-func (s *Server) ListenAndServe() (err error) {
+// ListenAndServe starts the local proxy server.
+// It accepts both SOCKS5 and HTTP proxy connections.
+func (s *LocalServer) ListenAndServe() error {
 	l, err := net.Listen("tcp", s.Addr)
 	if err != nil {
 		return err
@@ -230,12 +286,12 @@ func (s *Server) ListenAndServe() (err error) {
 	if s.Logger == nil {
 		s.Logger = DefaultLogger()
 	}
-	s.Logger.Info("https/socks5 started",
+	s.Logger.Info("http/socks5 proxy started",
 		"addr", l.Addr().(*net.TCPAddr).String())
 	for {
 		if conn, err := l.Accept(); err == nil {
 			go func() {
-				if err := s.handlerConn(conn); err != nil {
+				if err := s.handleConn(conn); err != nil {
 					s.Logger.Error("handle conn",
 						"from", conn.RemoteAddr().String(),
 						"msg", err)
@@ -247,3 +303,7 @@ func (s *Server) ListenAndServe() (err error) {
 
 	}
 }
+
+// Server is an alias for LocalServer for backward compatibility.
+// Deprecated: Use LocalServer instead.
+type Server = LocalServer

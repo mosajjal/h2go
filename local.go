@@ -11,14 +11,17 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"golang.org/x/net/http2"
 )
 
-var hc = &http.Client{Transport: http.DefaultTransport}
+// defaultHTTPClient is the default HTTP client used when none is provided.
+// It is initialized lazily when needed.
+var defaultHTTPClient HTTPClient
 
-// configureHTTP2Transport creates and configures an HTTP/2 capable transport
+// configureHTTP2Transport creates and configures an HTTP/2 capable transport.
 func configureHTTP2Transport(tlsConfig *tls.Config) *http.Transport {
 	transport := &http.Transport{
 		TLSClientConfig: tlsConfig,
@@ -28,24 +31,28 @@ func configureHTTP2Transport(tlsConfig *tls.Config) *http.Transport {
 	return transport
 }
 
+// Init initializes the global HTTP client with a custom certificate.
+// This is deprecated; prefer using WithHTTPClient option when creating a Client.
+//
+// Deprecated: Use NewClient with WithHTTPClient option instead.
 func Init(logger *slog.Logger, cert string) {
 	if logger == nil {
 		logger = DefaultLogger()
 	}
-	
+
 	// Create TLS config with HTTP/2 support
 	tlsConfig := &tls.Config{
 		MinVersion: tls.VersionTLS12,
 		NextProtos: []string{"h2", "http/1.1"}, // Prefer HTTP/2
 	}
-	
+
 	if f, err := os.Stat(cert); err == nil && !f.IsDir() {
-		var CAPOOL *x509.CertPool
-		CAPOOL, err := x509.SystemCertPool()
+		var caPool *x509.CertPool
+		caPool, err := x509.SystemCertPool()
 		if err != nil {
 			logger.Warn("system cert pool err",
 				"err", err)
-			CAPOOL = x509.NewCertPool()
+			caPool = x509.NewCertPool()
 		}
 		serverCert, err := os.ReadFile(cert)
 		if err != nil {
@@ -53,8 +60,8 @@ func Init(logger *slog.Logger, cert string) {
 				"err", err)
 			return
 		}
-		CAPOOL.AppendCertsFromPEM(serverCert)
-		tlsConfig.RootCAs = CAPOOL
+		caPool.AppendCertsFromPEM(serverCert)
+		tlsConfig.RootCAs = caPool
 		logger.Info("loaded certificate",
 			"cert", cert)
 	} else if err != nil {
@@ -64,30 +71,85 @@ func Init(logger *slog.Logger, cert string) {
 		logger.Error("cert file is a directory",
 			"cert", cert)
 	}
-	
-	hc = &http.Client{Transport: configureHTTP2Transport(tlsConfig)}
+
+	defaultHTTPClient = &http.Client{Transport: configureHTTP2Transport(tlsConfig)}
 }
 
-type localProxyConn struct {
-	uuid     string
-	server   string
-	secret   string
-	source   io.ReadCloser
-	close    chan bool
-	interval time.Duration
-	dst      io.WriteCloser
-	logger   *slog.Logger
+// NewHTTPClientWithCert creates a new HTTP client configured with the specified certificate.
+// This is useful for connecting to servers with self-signed certificates.
+func NewHTTPClientWithCert(certPath string, logger *slog.Logger) (*http.Client, error) {
+	if logger == nil {
+		logger = DefaultLogger()
+	}
+
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		NextProtos: []string{"h2", "http/1.1"},
+	}
+
+	f, err := os.Stat(certPath)
+	if err != nil {
+		return nil, fmt.Errorf("error reading cert file: %w", err)
+	}
+	if f.IsDir() {
+		return nil, fmt.Errorf("cert path is a directory: %s", certPath)
+	}
+
+	caPool, err := x509.SystemCertPool()
+	if err != nil {
+		logger.Warn("system cert pool err", "err", err)
+		caPool = x509.NewCertPool()
+	}
+
+	serverCert, err := os.ReadFile(certPath)
+	if err != nil {
+		return nil, fmt.Errorf("error reading cert file: %w", err)
+	}
+
+	caPool.AppendCertsFromPEM(serverCert)
+	tlsConfig.RootCAs = caPool
+	logger.Info("loaded certificate", "cert", certPath)
+
+	return &http.Client{Transport: configureHTTP2Transport(tlsConfig)}, nil
 }
 
-func (c *localProxyConn) genSign(req *http.Request) {
+// clientConnection represents a connection through the proxy server.
+// It implements io.ReadWriteCloser for bidirectional communication.
+type clientConnection struct {
+	uuid          string
+	server        string
+	secret        string
+	source        io.ReadCloser
+	close         chan bool
+	closed        bool
+	closeMu       sync.Mutex
+	interval      time.Duration
+	dst           io.WriteCloser
+	logger        *slog.Logger
+	httpClient    HTTPClient
+	authenticator Authenticator
+}
 
+// newClientConnection creates a new client connection.
+func newClientConnection(server, secret string, interval time.Duration, logger *slog.Logger, httpClient HTTPClient, auth Authenticator) *clientConnection {
+	return &clientConnection{
+		server:        server,
+		secret:        secret,
+		interval:      interval,
+		logger:        logger,
+		httpClient:    httpClient,
+		authenticator: auth,
+	}
+}
+
+func (c *clientConnection) genSign(req *http.Request) {
 	ts := fmt.Sprintf("%d", time.Now().Unix())
 	req.Header.Set("UUID", c.uuid)
 	req.Header.Set("timestamp", ts)
-	req.Header.Set("sign", GenHMACSHA1(c.secret, ts))
+	req.Header.Set("sign", c.authenticator.Sign(ts))
 }
 
-func (c *localProxyConn) chunkPush(data []byte, typ string) error {
+func (c *clientConnection) chunkPush(data []byte, typ string) error {
 	if c.dst != nil {
 		_, err := c.dst.Write(data)
 		return err
@@ -111,7 +173,7 @@ func (c *localProxyConn) chunkPush(data []byte, typ string) error {
 	go func() (err error) {
 		defer wr.Close()
 		defer ww.Close()
-		res, err := hc.Do(req)
+		res, err := c.httpClient.Do(req)
 		if err != nil {
 			return err
 		}
@@ -137,7 +199,7 @@ func (c *localProxyConn) chunkPush(data []byte, typ string) error {
 	return err
 }
 
-func (c *localProxyConn) push(data []byte, typ string) error {
+func (c *clientConnection) push(data []byte, typ string) error {
 	buf := bytes.NewBuffer(data)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*timeout)
 	defer cancel()
@@ -156,7 +218,7 @@ func (c *localProxyConn) push(data []byte, typ string) error {
 
 	// if there's a QUIT packet is going to end a connection that doesn't have a UUID on the server side
 	// it will cause some issues
-	res, err := hc.Do(req)
+	res, err := c.httpClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -176,7 +238,7 @@ func (c *localProxyConn) push(data []byte, typ string) error {
 	}
 }
 
-func (c *localProxyConn) connect(dstHost, dstPort string) (uuid string, err error) {
+func (c *clientConnection) connect(dstHost, dstPort string) (uuid string, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "GET", c.server+CONNECT, nil)
@@ -190,7 +252,7 @@ func (c *localProxyConn) connect(dstHost, dstPort string) (uuid string, err erro
 		"server", c.server+CONNECT,
 		"dstHost", dstHost,
 		"dstPort", dstPort)
-	res, err := hc.Do(req)
+	res, err := c.httpClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -206,7 +268,7 @@ func (c *localProxyConn) connect(dstHost, dstPort string) (uuid string, err erro
 
 }
 
-func (c *localProxyConn) pull() error {
+func (c *clientConnection) pull() error {
 
 	req, err := http.NewRequest("GET", c.server+PULL, nil)
 	if err != nil {
@@ -217,12 +279,12 @@ func (c *localProxyConn) pull() error {
 	if c.interval > 0 {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*timeout)
 		defer cancel()
-		req.WithContext(ctx)
+		req = req.WithContext(ctx)
 	}
 	c.logger.Debug("pull",
 		"server", c.server+PULL,
 		"uuid", c.uuid)
-	res, err := hc.Do(req)
+	res, err := c.httpClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -238,7 +300,8 @@ func (c *localProxyConn) pull() error {
 	return nil
 }
 
-func (c *localProxyConn) Read(b []byte) (n int, err error) {
+// Read reads data from the connection.
+func (c *clientConnection) Read(b []byte) (n int, err error) {
 
 	if c.source == nil {
 		if c.interval > 0 {
@@ -262,21 +325,18 @@ func (c *localProxyConn) Read(b []byte) (n int, err error) {
 		c.source = nil
 	}
 	if err == io.EOF && c.interval > 0 {
-		// c.logger.Debug("ignoreing eof",
-		// 	"eof", "true")
 		err = nil
 	}
 	return
 }
 
-func (c *localProxyConn) Write(b []byte) (int, error) {
+// Write writes data to the connection.
+func (c *clientConnection) Write(b []byte) (int, error) {
 
 	var err error
 	if c.interval > 0 {
 		err = c.push(b, DATA_TYP)
 	} else {
-		//err = c.push(b, DATA_TYP)
-		// this chunkpush does not respect the timeout value
 		c.logger.Debug("chunkPush",
 			"b", b)
 		err = c.chunkPush(b, DATA_TYP)
@@ -288,7 +348,7 @@ func (c *localProxyConn) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-func (c *localProxyConn) alive() {
+func (c *clientConnection) alive() {
 	for {
 		select {
 		case <-c.close:
@@ -301,13 +361,33 @@ func (c *localProxyConn) alive() {
 	}
 }
 
-func (c *localProxyConn) quit() error {
+func (c *clientConnection) quit() error {
 	return c.push([]byte("quit"), QUIT_TYP)
 }
 
-func (c *localProxyConn) Close() error {
+// Close closes the connection.
+// It is safe to call Close multiple times.
+func (c *clientConnection) Close() error {
+	c.closeMu.Lock()
+	if c.closed {
+		c.closeMu.Unlock()
+		return nil
+	}
+	c.closed = true
+	c.closeMu.Unlock()
+
 	c.logger.Debug("close",
 		"uuid", c.uuid)
 	close(c.close)
 	return c.quit()
 }
+
+// Legacy types for backward compatibility
+
+// localProxyConn is an alias for clientConnection for backward compatibility.
+// Deprecated: Use clientConnection instead.
+type localProxyConn = clientConnection
+
+// hc is maintained for backward compatibility with tests.
+// Deprecated: Use Client with WithHTTPClient option instead.
+var hc = &http.Client{Transport: http.DefaultTransport}
