@@ -2,25 +2,22 @@ package h2go
 
 import (
 	"crypto/tls"
+	"errors"
+	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
-	"time"
-
-	"fmt"
-	"net"
-
-	"errors"
-
 	"sync"
-
-	"io"
+	"time"
 
 	"github.com/google/uuid"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 )
 
+// Endpoint paths for the proxy server.
 const (
 	CONNECT    = "/connect"
 	PING       = "/ping"
@@ -30,12 +27,15 @@ const (
 	CHUNK_PULL = "/chunk_pull"
 	CHUNK_PUSH = "/chunk_push"
 )
+
+// Message types for the proxy protocol.
 const (
 	DATA_TYP  = "data"
 	QUIT_TYP  = "quit"
 	HEART_TYP = "heart"
 )
 
+// Protocol constants.
 const (
 	timeout  = 10
 	signTTL  = 10
@@ -46,94 +46,118 @@ const (
 	version = "20170803"
 )
 
-type DevZero struct {
-}
+// DevZero is an io.Reader that returns zeros.
+type DevZero struct{}
 
+// Read fills b with zeros and returns len(b).
 func (z DevZero) Read(b []byte) (n int, err error) {
 	for i := range b {
 		b[i] = 0
 	}
-
 	return len(b), nil
 }
 
 var bufPool = &sync.Pool{New: func() interface{} { return make([]byte, 1024*8) }}
 
-type httpProxy struct {
-	addr     string
-	secret   string
-	proxyMap map[string]*proxyConn
-	sync.Mutex
-	https  bool
-	logger *slog.Logger
+// ProxyServer is an HTTP/2 proxy server that handles proxy requests.
+// It supports both HTTP and HTTPS modes.
+type ProxyServer struct {
+	addr          string
+	secret        string
+	proxyMap      map[string]*proxyConn
+	mu            sync.Mutex
+	https         bool
+	logger        *slog.Logger
+	authenticator Authenticator
+	certPath      string
+	keyPath       string
+	mux           *http.ServeMux
 }
 
-func NewHttpProxy(logger *slog.Logger, addr, secret string, https bool) *httpProxy {
-	if logger == nil {
-		logger = DefaultLogger()
-	}
-	return &httpProxy{addr: addr,
-		secret:   secret,
+// NewProxyServer creates a new proxy server with the given options.
+//
+// Example:
+//
+//	server := h2go.NewProxyServer(
+//	    h2go.WithListenAddr(":8080"),
+//	    h2go.WithServerSecret("my-secret"),
+//	)
+func NewProxyServer(opts ...ServerOption) *ProxyServer {
+	s := &ProxyServer{
 		proxyMap: make(map[string]*proxyConn),
-		https:    https,
-		logger:   logger,
+		logger:   DefaultLogger(),
+		mux:      http.NewServeMux(),
 	}
+
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	// Set default authenticator if not provided
+	if s.authenticator == nil {
+		s.authenticator = NewHMACAuthenticator(s.secret)
+	}
+
+	return s
 }
 
-func (hp *httpProxy) handler() {
-	http.HandleFunc(CONNECT, hp.connect)
-	http.HandleFunc(PULL, hp.pull)
-	http.HandleFunc(PUSH, hp.push)
-	http.HandleFunc(PING, hp.ping)
-	http.HandleFunc(CHUNK_PULL, hp.chunkPull)
-	http.HandleFunc(CHUNK_PUSH, hp.chunkPush)
+// ListenAndServe starts the proxy server.
+// If HTTPS is enabled, it uses TLS; otherwise, it uses h2c (HTTP/2 cleartext).
+func (s *ProxyServer) ListenAndServe() error {
+	s.registerHandlers()
+
+	if s.https {
+		return s.listenHTTPS()
+	}
+	return s.listen()
 }
 
-func (hp *httpProxy) ListenHTTPS(cert, key string) {
-	hp.handler()
-	hp.logger.Info("starting the https/http2 server",
-		"addr", hp.addr)
-	
+func (s *ProxyServer) registerHandlers() {
+	s.mux.HandleFunc(CONNECT, s.handleConnect)
+	s.mux.HandleFunc(PULL, s.handlePull)
+	s.mux.HandleFunc(PUSH, s.handlePush)
+	s.mux.HandleFunc(PING, s.handlePing)
+	s.mux.HandleFunc(CHUNK_PULL, s.handleChunkPull)
+	s.mux.HandleFunc(CHUNK_PUSH, s.handleChunkPush)
+}
+
+func (s *ProxyServer) listenHTTPS() error {
+	s.logger.Info("starting the https/http2 server",
+		"addr", s.addr)
+
 	// Create HTTP/2 server with TLS
 	server := &http.Server{
-		Addr:    hp.addr,
-		Handler: nil,
+		Addr:    s.addr,
+		Handler: s.mux,
 		TLSConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
-			NextProtos: []string{"h2", "http/1.1"}, // Prefer HTTP/2
+			NextProtos: []string{"h2", "http/1.1"},
 		},
 	}
-	
+
 	// Configure HTTP/2
 	if err := http2.ConfigureServer(server, &http2.Server{}); err != nil {
-		hp.logger.Error("error configuring http2", "msg", err)
-		return
+		return fmt.Errorf("error configuring http2: %w", err)
 	}
-	
-	hp.logger.Error("error", "msg", server.ListenAndServeTLS(cert, key))
+
+	return server.ListenAndServeTLS(s.certPath, s.keyPath)
 }
 
-func (hp *httpProxy) Listen() {
-	hp.handler()
-	hp.logger.Info("starting the http/http2 server (h2c)",
-		"addr", hp.addr)
-	
+func (s *ProxyServer) listen() error {
+	s.logger.Info("starting the http/http2 server (h2c)",
+		"addr", s.addr)
+
 	// Create HTTP/2 server without TLS (h2c - HTTP/2 cleartext)
 	h2s := &http2.Server{}
 	server := &http.Server{
-		Addr:    hp.addr,
-		Handler: h2c.NewHandler(http.DefaultServeMux, h2s),
+		Addr:    s.addr,
+		Handler: h2c.NewHandler(s.mux, h2s),
 	}
-	
-	hp.logger.Error("error", "msg", server.ListenAndServe())
+
+	return server.ListenAndServe()
 }
 
-func (hp *httpProxy) download(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", 100<<20))
-	io.CopyN(w, DevZero{}, 100<<20)
-}
-
-func (hp *httpProxy) verify(r *http.Request) error {
+func (s *ProxyServer) verify(r *http.Request) error {
 	ts := r.Header.Get("timestamp")
 	if ts == "" {
 		return errors.New("timestamp is empty")
@@ -141,47 +165,47 @@ func (hp *httpProxy) verify(r *http.Request) error {
 	sign := r.Header.Get("sign")
 	tm, err := strconv.ParseInt(ts, 10, 0)
 	if err != nil {
-		return fmt.Errorf("timestamp invalid: %v", err)
+		return fmt.Errorf("timestamp invalid: %w", err)
 	}
 	now := time.Now().Unix()
 	if now-tm > signTTL {
 		return errors.New("timestamp expire")
 	}
-	if VerifyHMACSHA1(hp.secret, ts, sign) {
+	if s.authenticator.Verify(ts, sign) {
 		return nil
 	}
 	return errors.New("sign invalid")
 }
 
-func (hp *httpProxy) before(w http.ResponseWriter, r *http.Request) error {
-	err := hp.verify(r)
+func (s *ProxyServer) before(w http.ResponseWriter, r *http.Request) error {
+	err := s.verify(r)
 	if err != nil {
-		hp.logger.Warn("error while verifying the request",
+		s.logger.Warn("error while verifying the request",
 			"msg", err)
 		WriteNotFoundError(w, "404")
 	}
 	return err
 }
 
-func (hp *httpProxy) ping(w http.ResponseWriter, r *http.Request) {
-	hp.logger.Debug("ping",
+func (s *ProxyServer) handlePing(w http.ResponseWriter, r *http.Request) {
+	s.logger.Debug("ping",
 		"remote", r.RemoteAddr)
 	w.Header().Set("Version", version)
 	w.Write([]byte("pong"))
-	hp.logger.Debug("pong",
+	s.logger.Debug("pong",
 		"remote", r.RemoteAddr)
 }
 
-func (hp *httpProxy) pull(w http.ResponseWriter, r *http.Request) {
-	if err := hp.before(w, r); err != nil {
+func (s *ProxyServer) handlePull(w http.ResponseWriter, r *http.Request) {
+	if err := s.before(w, r); err != nil {
 		return
 	}
 	uuid := r.Header.Get("UUID")
-	hp.Lock()
-	pc, ok := hp.proxyMap[uuid]
-	hp.Unlock()
+	s.mu.Lock()
+	pc, ok := s.proxyMap[uuid]
+	s.mu.Unlock()
 	if !ok {
-		hp.logger.Warn("the connection associated with this uuid does not exist",
+		s.logger.Warn("the connection associated with this uuid does not exist",
 			"uuid", uuid)
 		WriteHTTPError(w, "uuid don't exist")
 		return
@@ -199,7 +223,7 @@ func (hp *httpProxy) pull(w http.ResponseWriter, r *http.Request) {
 	defer bufPool.Put(buf)
 	t, err := strconv.ParseInt(interval, 10, 0)
 	if err != nil {
-		hp.logger.Warn("error",
+		s.logger.Warn("error",
 			"interval", interval,
 			"msg", err)
 	}
@@ -213,9 +237,9 @@ func (hp *httpProxy) pull(w http.ResponseWriter, r *http.Request) {
 			if err, ok := err.(net.Error); ok && err.Timeout() {
 			} else {
 				if err != io.EOF && !pc.IsClosed() {
-					hp.logger.Error("error", "msg", err)
+					s.logger.Error("error", "msg", err)
 				}
-				hp.logger.Debug("closing the remote conn",
+				s.logger.Debug("closing the remote conn",
 					"uuid", uuid)
 				pc.Close()
 			}
@@ -225,7 +249,7 @@ func (hp *httpProxy) pull(w http.ResponseWriter, r *http.Request) {
 	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		hp.logger.Warn("error",
+		s.logger.Warn("error",
 			"msg", "can't convert to http.Flusher")
 	}
 	w.Header().Set("Transfer-Encoding", "chunked")
@@ -238,23 +262,23 @@ func (hp *httpProxy) pull(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			if err != io.EOF && !pc.IsClosed() {
-				hp.logger.Error("error", "msg", err)
+				s.logger.Error("error", "msg", err)
 			}
 			return
 		}
 	}
 }
 
-func (hp *httpProxy) push(w http.ResponseWriter, r *http.Request) {
-	if err := hp.before(w, r); err != nil {
+func (s *ProxyServer) handlePush(w http.ResponseWriter, r *http.Request) {
+	if err := s.before(w, r); err != nil {
 		return
 	}
 	uuid := r.Header.Get("UUID")
-	hp.Lock()
-	pc, ok := hp.proxyMap[uuid]
-	hp.Unlock()
+	s.mu.Lock()
+	pc, ok := s.proxyMap[uuid]
+	s.mu.Unlock()
 	if !ok {
-		hp.logger.Warn("the connection associated with this uuid does not exist",
+		s.logger.Warn("the connection associated with this uuid does not exist",
 			"uuid", uuid)
 		WriteHTTPError(w, "uuid don't exist")
 		return
@@ -270,26 +294,24 @@ func (hp *httpProxy) push(w http.ResponseWriter, r *http.Request) {
 	case HEART_TYP:
 		pc.Heart()
 	case QUIT_TYP:
-		hp.logger.Debug("closing the remote conn",
+		s.logger.Debug("closing the remote conn",
 			"uuid", uuid)
 		pc.Close()
 	case DATA_TYP:
 		_, err := io.Copy(pc.remote, r.Body)
 		if err != nil && err != io.EOF {
 			if !pc.IsClosed() {
-				hp.logger.Error("error", "msg", err)
+				s.logger.Error("error", "msg", err)
 			}
-			hp.logger.Debug("closing the remote conn",
+			s.logger.Debug("closing the remote conn",
 				"uuid", uuid)
 			pc.Close()
 		}
 	}
-
 }
 
-func (hp *httpProxy) connect(w http.ResponseWriter, r *http.Request) {
-
-	if err := hp.before(w, r); err != nil {
+func (s *ProxyServer) handleConnect(w http.ResponseWriter, r *http.Request) {
+	if err := s.before(w, r); err != nil {
 		return
 	}
 
@@ -301,25 +323,25 @@ func (hp *httpProxy) connect(w http.ResponseWriter, r *http.Request) {
 		WriteHTTPError(w, fmt.Sprintf("connect %s %v", addr, err))
 		return
 	}
-	hp.logger.Info("connect success", "addr", addr)
+	s.logger.Info("connect success", "addr", addr)
 	proxyID := uuid.New().String()
 	pc := newProxyConn(remote, proxyID)
-	hp.Lock()
-	hp.proxyMap[proxyID] = pc
-	hp.Unlock()
+	s.mu.Lock()
+	s.proxyMap[proxyID] = pc
+	s.mu.Unlock()
 
 	go func() {
 		pc.Do()
-		hp.Lock()
-		delete(hp.proxyMap, proxyID)
-		hp.Unlock()
-		hp.logger.Info("disconnect", "addr", addr)
+		s.mu.Lock()
+		delete(s.proxyMap, proxyID)
+		s.mu.Unlock()
+		s.logger.Info("disconnect", "addr", addr)
 	}()
 	WriteHTTPOK(w, proxyID)
 }
 
-func (hp *httpProxy) chunkPush(w http.ResponseWriter, r *http.Request) {
-	if err := hp.before(w, r); err != nil {
+func (s *ProxyServer) handleChunkPush(w http.ResponseWriter, r *http.Request) {
+	if err := s.before(w, r); err != nil {
 		return
 	}
 	chunk := bufPool.Get().([]byte)
@@ -330,14 +352,14 @@ func (hp *httpProxy) chunkPush(w http.ResponseWriter, r *http.Request) {
 			// unpack chunk
 		}
 		if err != nil {
-			hp.logger.Error("error while reading chunks", "msg", err)
+			s.logger.Error("error while reading chunks", "msg", err)
 			break
 		}
 	}
 }
 
-func (hp *httpProxy) chunkPull(w http.ResponseWriter, r *http.Request) {
-	if err := hp.before(w, r); err != nil {
+func (s *ProxyServer) handleChunkPull(w http.ResponseWriter, r *http.Request) {
+	if err := s.before(w, r); err != nil {
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
@@ -348,9 +370,88 @@ func (hp *httpProxy) chunkPull(w http.ResponseWriter, r *http.Request) {
 	for {
 		_, err := w.Write(buf)
 		if err != nil {
-			hp.logger.Error("error while flushing buffer", "msg", err)
+			s.logger.Error("error while flushing buffer", "msg", err)
 			break
 		}
 		flusher.Flush()
 	}
+}
+
+// download handles download requests.
+func (s *ProxyServer) download(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", 100<<20))
+	io.CopyN(w, DevZero{}, 100<<20)
+}
+
+// Legacy types and functions for backward compatibility
+
+// httpProxy is an alias for ProxyServer for backward compatibility.
+// Deprecated: Use ProxyServer instead.
+type httpProxy = ProxyServer
+
+// NewHttpProxy creates a new proxy server for backward compatibility.
+// Deprecated: Use NewProxyServer instead.
+func NewHttpProxy(logger *slog.Logger, addr, secret string, https bool) *httpProxy {
+	return NewProxyServer(
+		WithListenAddr(addr),
+		WithServerSecret(secret),
+		WithHTTPS(https),
+		WithServerLogger(logger),
+	)
+}
+
+// ListenHTTPS starts the server in HTTPS mode.
+// Deprecated: Use ListenAndServe with WithHTTPS option instead.
+func (s *ProxyServer) ListenHTTPS(cert, key string) {
+	s.certPath = cert
+	s.keyPath = key
+	s.https = true
+	s.registerHandlersLegacy()
+	s.logger.Info("starting the https/http2 server",
+		"addr", s.addr)
+
+	// Create HTTP/2 server with TLS
+	server := &http.Server{
+		Addr:    s.addr,
+		Handler: nil,
+		TLSConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			NextProtos: []string{"h2", "http/1.1"},
+		},
+	}
+
+	// Configure HTTP/2
+	if err := http2.ConfigureServer(server, &http2.Server{}); err != nil {
+		s.logger.Error("error configuring http2", "msg", err)
+		return
+	}
+
+	s.logger.Error("error", "msg", server.ListenAndServeTLS(cert, key))
+}
+
+// Listen starts the server in HTTP mode (h2c).
+// Deprecated: Use ListenAndServe instead.
+func (s *ProxyServer) Listen() {
+	s.registerHandlersLegacy()
+	s.logger.Info("starting the http/http2 server (h2c)",
+		"addr", s.addr)
+
+	// Create HTTP/2 server without TLS (h2c - HTTP/2 cleartext)
+	h2s := &http2.Server{}
+	server := &http.Server{
+		Addr:    s.addr,
+		Handler: h2c.NewHandler(http.DefaultServeMux, h2s),
+	}
+
+	s.logger.Error("error", "msg", server.ListenAndServe())
+}
+
+// registerHandlersLegacy registers handlers on http.DefaultServeMux for backward compatibility.
+func (s *ProxyServer) registerHandlersLegacy() {
+	http.HandleFunc(CONNECT, s.handleConnect)
+	http.HandleFunc(PULL, s.handlePull)
+	http.HandleFunc(PUSH, s.handlePush)
+	http.HandleFunc(PING, s.handlePing)
+	http.HandleFunc(CHUNK_PULL, s.handleChunkPull)
+	http.HandleFunc(CHUNK_PUSH, s.handleChunkPush)
 }
